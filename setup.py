@@ -36,7 +36,7 @@ setup(name='baselines',
           'tqdm',
           'joblib',
           'cloudpickle',
-          'tensorflow==2.0',
+          'tensorflow==1.14',
           'click',
           'opencv-python'
       ],
