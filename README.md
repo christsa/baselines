@@ -1,6 +1,6 @@
 ## Demonstration-Guided Deep Reinforcement Learning of Control Policies for Dexterous Human-Robot Interaction
 
-The environments used in the paper https://arxiv.org/abs/1906.11695 have been trained with an modified version of the DDPG-HER implementation found in https://github.com/christsa/baselines/tree/master/baselines/her.
+The environments used in the paper https://arxiv.org/abs/1906.11695 have been trained with a modified version of the DDPG-HER implementation found in https://github.com/christsa/baselines/tree/master/baselines/her.
 
 <img src="data/logo.jpg" width=25% align="right" /> [![Build status](https://travis-ci.org/openai/baselines.svg?branch=master)](https://travis-ci.org/openai/baselines)
 
