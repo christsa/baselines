@@ -6,7 +6,7 @@ import pdb
 from baselines import logger
 from baselines.common import set_global_seeds
 import baselines.her.experiment.config as config
-from baselines.her.rollout import RolloutWorker
+from baselines.her.rollout_2policies import RolloutWorker
 
 
 @click.command()
@@ -38,19 +38,17 @@ def main(policy_file, seed, n_test_rollouts, render):
         'compute_Q': True,
         'rollout_batch_size': 1,
         'render': bool(render),
-        'use_imitation': False,
-        'eval_play': True
     }
 
     for name in ['T', 'gamma', 'noise_eps', 'random_eps']:
         eval_params[name] = params[name]
-    
+
     evaluator = RolloutWorker(params['make_env'], policy, dims, logger, **eval_params)
     evaluator.seed(seed)
     # Run evaluation.
     evaluator.clear_history()
     for _ in range(n_test_rollouts):
-        evaluator.generate_rollouts(0.0)
+        evaluator.generate_rollouts()
 
     # record logs
     for key, val in evaluator.logs('test'):

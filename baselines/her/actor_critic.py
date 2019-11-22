@@ -28,7 +28,7 @@ class ActorCritic:
         # Prepare inputs for actor and critic.
         o = self.o_stats.normalize(self.o_tf)
         g = self.g_stats.normalize(self.g_tf)
-        input_pi = tf.concat(axis=1, values=[o, g])  # for actor
+        input_pi = o#tf.concat(axis=1, values=[o, g])  # for actor
 
         # Networks.
         with tf.variable_scope('pi'):
@@ -36,9 +36,9 @@ class ActorCritic:
                 input_pi, [self.hidden] * self.layers + [self.dimu]))
         with tf.variable_scope('Q'):
             # for policy training
-            input_Q = tf.concat(axis=1, values=[o, g, self.pi_tf / self.max_u])
+            input_Q = tf.concat(axis=1, values=[o, self.pi_tf / self.max_u])
             self.Q_pi_tf = nn(input_Q, [self.hidden] * self.layers + [1])
             # for critic training
-            input_Q = tf.concat(axis=1, values=[o, g, self.u_tf / self.max_u])
+            input_Q = tf.concat(axis=1, values=[o, self.u_tf / self.max_u])
             self._input_Q = input_Q  # exposed for tests
             self.Q_tf = nn(input_Q, [self.hidden] * self.layers + [1], reuse=True)

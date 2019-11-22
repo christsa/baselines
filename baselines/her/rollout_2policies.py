@@ -2,7 +2,6 @@ from collections import deque
 
 import numpy as np
 import pickle
-import csv
 from mujoco_py import MujocoException
 
 import pdb
@@ -15,7 +14,7 @@ class RolloutWorker:
     @store_args
     def __init__(self, make_env, policy, dims, logger, T, rollout_batch_size=2,
                  exploit=False, use_target_net=False, compute_Q=False, noise_eps=0,
-                 random_eps=0, history_len=100, render=False, use_imitation=False, eval_play=False, imitation_threshold = 0.8, **kwargs):
+                 random_eps=0, history_len=100, render=False, **kwargs):
         """Rollout worker generates experience by interacting with one or many environments.
 
         Args:
@@ -34,8 +33,6 @@ class RolloutWorker:
             history_len (int): length of history for statistics smoothing
             render (boolean): whether or not to render the rollouts
         """
-
-
         self.envs = [make_env() for _ in range(rollout_batch_size)]
         assert self.T > 0
 
@@ -43,9 +40,6 @@ class RolloutWorker:
 
         self.success_history = deque(maxlen=history_len)
         self.success_pos_history = deque(maxlen=history_len)
-        self.success_ang_history = deque(maxlen=history_len)
-        self.success_imi_ang_history = deque(maxlen=history_len)
-        self.success_imi_pos_history = deque(maxlen=history_len)
         self.Q_history = deque(maxlen=history_len)
 
         self.first_policy_done = False
@@ -73,7 +67,7 @@ class RolloutWorker:
         for i in range(self.rollout_batch_size):
             self.reset_rollout(i)
 
-    def generate_rollouts(self, imitation_threshold):
+    def generate_rollouts(self):
         """Performs `rollout_batch_size` rollouts in parallel for time horizon `T` with the current
         policy acting on it accordingly.
         """
@@ -84,21 +78,12 @@ class RolloutWorker:
         ag = np.empty((self.rollout_batch_size, self.dims['g']), np.float32)  # achieved goals
         o[:] = self.initial_o
         ag[:] = self.initial_ag
-        imitation = False
-        if np.random.uniform(0, 1, 1) > imitation_threshold and self.use_imitation:
-            imitation = True
 
         # generate episodes
-        obs, achieved_goals, acts, goals, successes, successes_pos, successes_ang, successes_imi_ang, successes_imi_pos = [], [], [], [], [], [], [], [], []
+        obs, achieved_goals, acts, goals, successes, successes_pos = [], [], [], [], [], []
         info_values = [np.empty((self.T, self.rollout_batch_size, self.dims['info_' + key]), np.float32) for key in self.info_keys]
         Qs = []
-
-
         for t in range(self.T):
-            # pdb.set_trace()
-            self.g[0,:] = self.envs[0].update_goal()
-            if self.eval_play == False:
-                self.g[1,:] = self.envs[1].update_goal()
             policy_output = self.policy.get_actions(
                 o, ag, self.g,
                 compute_Q=self.compute_Q,
@@ -106,18 +91,11 @@ class RolloutWorker:
                 random_eps=self.random_eps if not self.exploit else 0.,
                 use_target_net=self.use_target_net)
 
-
             if self.compute_Q:
                 u, Q = policy_output
                 Qs.append(Q)
             else:
                 u = policy_output
-
-            if imitation:
-                u[0, 9:] = self.recorded_array[t]
-                u[1, 9:] = self.recorded_array[t]
-                noise = 0.2 * np.random.randn(*u.shape)  # gaussian noise
-                u[:,9:] += noise[:,9:]
 
             if u.ndim == 1:
                 # The non-batched case should still have a reasonable shape.
@@ -127,9 +105,6 @@ class RolloutWorker:
             ag_new = np.empty((self.rollout_batch_size, self.dims['g']))
             success = np.zeros(self.rollout_batch_size)
             success_pos = np.zeros(self.rollout_batch_size)
-            success_ang = np.zeros(self.rollout_batch_size)
-            success_imi_ang = np.zeros(self.rollout_batch_size)
-            success_imi_pos = np.zeros(self.rollout_batch_size)
             # compute new states and observations
             for i in range(self.rollout_batch_size):
                 try:
@@ -139,9 +114,8 @@ class RolloutWorker:
                     if 'is_success' in info:
                         success[i] = info['is_success'][1]
                         success_pos[i] = info['is_success'][0]
-                        success_ang[i] = info['is_success'][2]
-                        success_imi_ang[i] = info['is_success'][3]
-                        success_imi_pos[i] = info['is_success'][4]
+                    if 'done' in info:
+                        self.first_policy_done = info['done']
                     o_new[i] = curr_o_new['observation']
                     ag_new[i] = curr_o_new['achieved_goal']
                     for idx, key in enumerate(self.info_keys):
@@ -149,7 +123,10 @@ class RolloutWorker:
                     if self.render:
                         self.envs[i].render()
                 except MujocoException as e:
-                    return self.generate_rollouts(1.0)
+                    return self.generate_rollouts()
+
+            if self.first_policy_done:
+                break
 
             if np.isnan(o_new).any():
                 self.logger.warning('NaN caught during rollout generation. Trying again...')
@@ -160,9 +137,6 @@ class RolloutWorker:
             achieved_goals.append(ag.copy())
             successes.append(success.copy())
             successes_pos.append(success_pos.copy())
-            successes_ang.append(success_ang.copy())
-            successes_imi_ang.append(success_imi_ang.copy())
-            successes_imi_pos.append(success_imi_pos.copy())
             acts.append(u.copy())
             goals.append(self.g.copy())
             #Qs.append(np.linalg.norm(self.g.copy()-ag.copy(),axis=-1))
@@ -179,21 +153,11 @@ class RolloutWorker:
         # stats
         successful = np.array(successes)[-1, :]
         successful_pos = np.array(successes_pos)[-1, :]
-        successful_ang = np.array(successes_ang)[-1, :]
-        successful_imi_ang = np.array(successes_imi_ang)[-1, :]
-        successful_imi_pos = np.array(successes_imi_pos)[-1, :]
         assert successful.shape == (self.rollout_batch_size,)
         success_rate = np.mean(successful)
         success_rate_pos = np.mean(successful_pos)
-        success_rate_ang = np.mean(successful_ang)
-        success_rate_imi_ang = np.mean(successful_imi_ang)
-        success_rate_imi_pos = np.mean(successful_imi_pos)
-
         self.success_history.append(success_rate)
         self.success_pos_history.append(success_rate_pos)
-        self.success_ang_history.append(success_rate_ang)
-        self.success_imi_ang_history.append(success_rate_imi_ang)
-        self.success_imi_pos_history.append(success_rate_imi_pos)
         if self.compute_Q:
             self.Q_history.append(np.mean(Qs))
         self.n_episodes += self.rollout_batch_size
@@ -201,6 +165,172 @@ class RolloutWorker:
         obs.append(o.copy())
         achieved_goals.append(ag.copy())
         self.initial_o[:] = o
+
+        for t in range(self.T):
+
+            # self.g = np.array([[1, 1, 1, 1,
+            #                   0.82950088,  0.19504257,  0.74951634,  0.82558665,  0.19408095,  0.72752193,
+            #                   0.8294237,  0.19509856,  0.70551644,  0.83616574,  0.19685965,  0.6825068]], 'Float32')
+
+            self.g = np.array([[1, 1, 1, 1,
+                                0.81399449,
+                                0.08906187,
+                                0.36651383,
+                                0.80723628,
+                                0.08749478,
+                                0.34525658,
+                                0.80821288,
+                                0.08766061,
+                                0.32291785,
+                                0.81195864,
+                                0.08844444,
+                                0.29918275]], 'Float32')
+
+
+
+            policy_output = self.policy.get_actions(
+                o, ag, self.g,
+                compute_Q=self.compute_Q,
+                noise_eps=self.noise_eps if not self.exploit else 0.,
+                random_eps=self.random_eps if not self.exploit else 0.,
+                use_target_net=self.use_target_net)
+
+
+            if self.compute_Q:
+                u, Q = policy_output
+                Qs.append(Q)
+            else:
+                u = policy_output
+
+            if u.ndim == 1:
+                # The non-batched case should still have a reasonable shape.
+                u = u.reshape(1, -1)
+
+            o_new = np.empty((self.rollout_batch_size, self.dims['o']))
+            ag_new = np.empty((self.rollout_batch_size, self.dims['g']))
+            success = np.zeros(self.rollout_batch_size)
+            success_pos = np.zeros(self.rollout_batch_size)
+            # compute new states and observations
+            for i in range(self.rollout_batch_size):
+                try:
+                    # We fully ignore the reward here because it will have to be re-computed
+                    # for HER.
+                    curr_o_new, _, _, info = self.envs[i].step(u[i])
+                    if 'is_success' in info:
+                        success[i] = info['is_success'][1]
+                        success_pos[i] = info['is_success'][0]
+                    if 'done' in info:
+                        self.first_policy_done = info['done']
+                    o_new[i] = curr_o_new['observation']
+                    ag_new[i] = curr_o_new['achieved_goal']
+                    for idx, key in enumerate(self.info_keys):
+                        info_values[idx][t, i] = info[key]
+                    if self.render:
+                        self.envs[i].render()
+                except MujocoException as e:
+                    return self.generate_rollouts()
+
+            if self.first_policy_done:
+                break
+
+            if np.isnan(o_new).any():
+                self.logger.warning('NaN caught during rollout generation. Trying again...')
+                self.reset_all_rollouts()
+                return self.generate_rollouts()
+
+            obs.append(o.copy())
+            achieved_goals.append(ag.copy())
+            successes.append(success.copy())
+            successes_pos.append(success_pos.copy())
+            acts.append(u.copy())
+            goals.append(self.g.copy())
+            #Qs.append(np.linalg.norm(self.g.copy()-ag.copy(),axis=-1))
+            o[...] = o_new
+            ag[...] = ag_new
+
+        # for t in range(self.T):
+        #
+        #     # self.g = np.array([[1, 1, 1, 1, 0.77939238,
+        #     #        0.01007279,
+        #     #        0.77396591,
+        #     #        0.78406789,
+        #     #        0.01003857,
+        #     #        0.75209954,
+        #     #        0.7807472,
+        #     #        0.01000307,
+        #     #        0.72998683,
+        #     #        0.77445873,
+        #     #        0.00996551,
+        #     #        0.70678223,
+        #     #        0.86935003,
+        #     #        0.00708711,
+        #     #        0.7767419,
+        #     #        0.87402555,
+        #     #        0.00705288,
+        #     #        0.75487552,
+        #     #        0.87070486,
+        #     #        0.00701738,
+        #     #        0.73276282,
+        #     #        0.86441638,
+        #     #        0.00697982,
+        #     #        0.70955821]], 'Float32')
+        #
+        #
+        #
+        #     policy_output = self.policy.get_actions(
+        #         o, ag, self.g,
+        #         compute_Q=self.compute_Q,
+        #         noise_eps=self.noise_eps if not self.exploit else 0.,
+        #         random_eps=self.random_eps if not self.exploit else 0.,
+        #         use_target_net=self.use_target_net)
+        #
+        #
+        #     if self.compute_Q:
+        #         u, Q = policy_output
+        #         Qs.append(Q)
+        #     else:
+        #         u = policy_output
+        #
+        #     if u.ndim == 1:
+        #         # The non-batched case should still have a reasonable shape.
+        #         u = u.reshape(1, -1)
+        #
+        #     o_new = np.empty((self.rollout_batch_size, self.dims['o']))
+        #     ag_new = np.empty((self.rollout_batch_size, self.dims['g']))
+        #     success = np.zeros(self.rollout_batch_size)
+        #     success_pos = np.zeros(self.rollout_batch_size)
+        #     # compute new states and observations
+        #     for i in range(self.rollout_batch_size):
+        #         try:
+        #             # We fully ignore the reward here because it will have to be re-computed
+        #             # for HER.
+        #             curr_o_new, _, _, info = self.envs[i].step(u[i])
+        #             if 'is_success' in info:
+        #                 success[i] = info['is_success'][1]
+        #                 success_pos[i] = info['is_success'][0]
+        #             o_new[i] = curr_o_new['observation']
+        #             ag_new[i] = curr_o_new['achieved_goal']
+        #             for idx, key in enumerate(self.info_keys):
+        #                 info_values[idx][t, i] = info[key]
+        #             if self.render:
+        #                 self.envs[i].render()
+        #         except MujocoException as e:
+        #             return self.generate_rollouts()
+        #
+        #     if np.isnan(o_new).any():
+        #         self.logger.warning('NaN caught during rollout generation. Trying again...')
+        #         self.reset_all_rollouts()
+        #         return self.generate_rollouts()
+        #
+        #     obs.append(o.copy())
+        #     achieved_goals.append(ag.copy())
+        #     successes.append(success.copy())
+        #     successes_pos.append(success_pos.copy())
+        #     acts.append(u.copy())
+        #     goals.append(self.g.copy())
+        #     #Qs.append(np.linalg.norm(self.g.copy()-ag.copy(),axis=-1))
+        #     o[...] = o_new
+        #     ag[...] = ag_new
 
 
         return convert_episode_to_batch_major(episode)
@@ -210,15 +340,11 @@ class RolloutWorker:
         """
         self.success_history.clear()
         self.success_pos_history.clear()
-        self.success_ang_history.clear()
-        self.success_imi_ang_history.clear()
-        self.success_imi_pos_history.clear()
         self.Q_history.clear()
 
 
     def current_success_rate(self):
-        return [np.mean(self.success_history)/5.0+np.mean(self.success_pos_history)*1.0, np.mean(self.success_pos_history),
-                np.mean(self.success_history), np.mean(self.success_ang_history), np.mean(self.success_imi_ang_history),np.mean(self.success_imi_pos_history)]
+        return [np.mean(self.success_history)/5.0+np.mean(self.success_pos_history)*1.0, np.mean(self.success_pos_history), np.mean(self.success_history)]
 
     def current_mean_Q(self):
         return np.mean(self.Q_history)
@@ -235,9 +361,6 @@ class RolloutWorker:
         logs = []
         logs += [('mean_force_error', np.mean(self.success_history))]
         logs += [('mean_pos_error', np.mean(self.success_pos_history))]
-        logs += [('mean_ang_error', np.mean(self.success_ang_history))]
-        logs += [('mean_imi_ang_error', np.mean(self.success_imi_ang_history))]
-        logs += [('mean_imi_pos_error', np.mean(self.success_imi_pos_history))]
         logs += [('succes_rate', np.mean(self.success_history)/5.0+np.mean(self.success_pos_history)*1.0)]
         if self.compute_Q:
             logs += [('mean_Q', np.mean(self.Q_history))]

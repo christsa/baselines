@@ -1,14 +1,15 @@
-import os
+from copy import deepcopy
 import numpy as np
+import json
+import os
 import gym
-
 from baselines import logger
 from baselines.her.ddpg import DDPG
-from baselines.her.her_sampler import make_sample_her_transitions
-from baselines.bench.monitor import Monitor
+from baselines.her.her import make_sample_her_transitions
+
 
 DEFAULT_ENV_PARAMS = {
-    'FetchReach-v1': {
+    'FetchReach-v0': {
         'n_cycles': 10,
     },
 }
@@ -40,24 +41,15 @@ DEFAULT_PARAMS = {
     'random_eps': 0.3,  # percentage of time a random action is taken
     'noise_eps': 0.2,  # std of gaussian noise added to not-completely-random actions as a percentage of max_u
     # HER
-    'replay_strategy': 'future',  # supported modes: future, none
-    'replay_k': 4,  # number of additional goals used for replay, only used if off_policy_data=future
+    'replay_strategy': 'none',  # supported modes: future, none
+    'replay_k': 2,  # number of additional goals used for replay, only used if off_policy_data=future
     # normalization
     'norm_eps': 0.01,  # epsilon used for observation normalization
     'norm_clip': 5,  # normalized observations are cropped to this values
-
-    'bc_loss': 0, # whether or not to use the behavior cloning loss as an auxilliary loss
-    'q_filter': 0, # whether or not a Q value filter should be used on the Actor outputs
-    'num_demo': 100, # number of expert demo episodes
-    'demo_batch_size': 128, #number of samples to be used from the demonstrations buffer, per mpi thread 128/1024 or 32/256
-    'prm_loss_weight': 0.001, #Weight corresponding to the primary loss
-    'aux_loss_weight':  0.0078, #Weight corresponding to the auxilliary loss also called the cloning loss
 }
 
 
 CACHED_ENVS = {}
-
-
 def cached_make_env(make_env):
     """
     Only creates a new environment from the provided function if one has not yet already been
@@ -73,33 +65,16 @@ def cached_make_env(make_env):
 def prepare_params(kwargs):
     # DDPG params
     ddpg_params = dict()
+
     env_name = kwargs['env_name']
-
-    def make_env(subrank=None):
-        env = gym.make(env_name)
-        if subrank is not None and logger.get_dir() is not None:
-            try:
-                from mpi4py import MPI
-                mpi_rank = MPI.COMM_WORLD.Get_rank()
-            except ImportError:
-                MPI = None
-                mpi_rank = 0
-                logger.warn('Running with a single MPI process. This should work, but the results may differ from the ones publshed in Plappert et al.')
-
-            max_episode_steps = env._max_episode_steps
-            env =  Monitor(env,
-                           os.path.join(logger.get_dir(), str(mpi_rank) + '.' + str(subrank)),
-                           allow_early_resets=True)
-            # hack to re-expose _max_episode_steps (ideally should replace reliance on it downstream)
-            env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
-        return env
-
+    def make_env():
+        return gym.make(env_name)
     kwargs['make_env'] = make_env
     tmp_env = cached_make_env(kwargs['make_env'])
     assert hasattr(tmp_env, '_max_episode_steps')
     kwargs['T'] = tmp_env._max_episode_steps
-
-    kwargs['max_u'] = np.array(kwargs['max_u']) if isinstance(kwargs['max_u'], list) else kwargs['max_u']
+    tmp_env.reset()
+    kwargs['max_u'] = np.array(kwargs['max_u']) if type(kwargs['max_u']) == list else kwargs['max_u']
     kwargs['gamma'] = 1. - 1. / kwargs['T']
     if 'lr' in kwargs:
         kwargs['pi_lr'] = kwargs['lr']
@@ -107,7 +82,7 @@ def prepare_params(kwargs):
         del kwargs['lr']
     for name in ['buffer_size', 'hidden', 'layers',
                  'network_class',
-                 'polyak',
+                 'polyak', 
                  'batch_size', 'Q_lr', 'pi_lr',
                  'norm_eps', 'norm_clip', 'max_u',
                  'action_l2', 'clip_obs', 'scope', 'relative_goals']:
@@ -127,7 +102,6 @@ def log_params(params, logger=logger):
 def configure_her(params):
     env = cached_make_env(params['make_env'])
     env.reset()
-
     def reward_fun(ag_2, g, info):  # vectorized
         return env.compute_reward(achieved_goal=ag_2, desired_goal=g, info=info)
 
@@ -169,12 +143,6 @@ def configure_ddpg(dims, params, reuse=False, use_mpi=True, clip_return=True):
                         'subtract_goals': simple_goal_subtract,
                         'sample_transitions': sample_her_transitions,
                         'gamma': gamma,
-                        'bc_loss': params['bc_loss'],
-                        'q_filter': params['q_filter'],
-                        'num_demo': params['num_demo'],
-                        'demo_batch_size': params['demo_batch_size'],
-                        'prm_loss_weight': params['prm_loss_weight'],
-                        'aux_loss_weight': params['aux_loss_weight'],
                         })
     ddpg_params['info'] = {
         'env_name': params['env_name'],

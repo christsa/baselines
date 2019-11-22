@@ -31,11 +31,12 @@ setup(name='baselines',
       packages=[package for package in find_packages()
                 if package.startswith('baselines')],
       install_requires=[
-          'gym>=0.15.4, <0.16.0',
+	  'mpi4py',
           'scipy',
           'tqdm',
           'joblib',
           'cloudpickle',
+          'tensorflow==2.0',
           'click',
           'opencv-python'
       ],
@@ -55,6 +56,6 @@ for tf_pkg_name in ['tensorflow', 'tensorflow-gpu', 'tf-nightly', 'tf-nightly-gp
         tf_pkg = pkg_resources.get_distribution(tf_pkg_name)
     except pkg_resources.DistributionNotFound:
         pass
-assert tf_pkg is not None, 'TensorFlow needed, of version above 1.4'
+#assert tf_pkg is not None, 'TensorFlow needed, of version above 1.4'
 from distutils.version import LooseVersion
-assert LooseVersion(re.sub(r'-?rc\d+$', '', tf_pkg.version)) >= LooseVersion('1.4.0')
+#assert LooseVersion(re.sub(r'-?rc\d+$', '', tf_pkg.version)) >= LooseVersion('1.4.0')
